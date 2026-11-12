@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# 工具生成物 / 本地试验
+tmp/
+out/
+
+# 密钥：不要把 Key 提交上去
+.env
+*key*.txt
