@@ -9,5 +9,6 @@ tmp/
 out/
 
 # 密钥：不要把 Key 提交上去
+config.py
 .env
 *key*.txt

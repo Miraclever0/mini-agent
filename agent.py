@@ -5,9 +5,10 @@
     python agent.py "把 tests 里失败的用例找出来"   # 跑指定任务
     python agent.py --mock              # 不联网，用假模型走一遍完整循环
 
-改这一行就能跑：API_KEY
+第一次用：把 config.example.py 复制成 config.py，填上你的 DeepSeek Key。
 """
 
+import importlib.util
 import json
 import os
 import subprocess
@@ -17,18 +18,35 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-# ---------------------------------------------------------------- 配置
-
 # 输出被管道接走时统一用 UTF-8，避免 Windows 下按 GBK 编码导致乱码
 for _stream in (sys.stdout, sys.stderr):
     if not _stream.isatty():
         _stream.reconfigure(encoding="utf-8", errors="replace")
 
-API_KEY = os.getenv("DEEPSEEK_API_KEY", "sk-00000000000000000000000000000000")  # ← 换成你的 Key
-BASE_URL = "https://api.deepseek.com/chat/completions"
-MODEL = "deepseek-chat"
-MAX_STEPS = 12          # 步数上限：模型不会自己停，你得给它一个死线
-MAX_OUTPUT = 4000       # 单次工具输出上限：防止一个文件把上下文撑爆
+# ---------------------------------------------------------------- 配置
+# 配置放在同目录的 config.py（不入库）；没有就退回 config.example.py 默认值，
+# 这样 --mock 不用先配 Key 也能跑。
+
+def _load_config():
+    here = Path(__file__).resolve().parent
+    for name in ("config.py", "config.example.py"):
+        path = here / name
+        if path.exists():
+            spec = importlib.util.spec_from_file_location("_agent_config", path)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            return module, name
+    raise SystemExit("找不到 config.py 或 config.example.py，请检查安装是否完整。")
+
+
+CFG, CONFIG_FILE = _load_config()
+
+API_KEY = os.getenv("DEEPSEEK_API_KEY") or CFG.API_KEY   # 环境变量优先，方便临时覆盖
+BASE_URL = CFG.BASE_URL
+MODEL = CFG.MODEL
+TEMPERATURE = CFG.TEMPERATURE
+MAX_STEPS = CFG.MAX_STEPS
+MAX_OUTPUT = CFG.MAX_OUTPUT
 WORKROOT = Path.cwd().resolve()   # 工具只能碰这个目录以内的东西
 
 SYSTEM_PROMPT = """你是一个能操作本机文件的助手。
@@ -177,7 +195,7 @@ def chat(messages, tools=TOOLS, retries=3):
         "model": MODEL,
         "messages": messages,
         "tools": tools,
-        "temperature": 0,
+        "temperature": TEMPERATURE,
     }
     data = json.dumps(payload).encode("utf-8")
     headers = {
@@ -294,8 +312,15 @@ if __name__ == "__main__":
     argv = [a for a in argv if a != "--mock"]
     task = " ".join(argv) or DEFAULT_TASK
 
-    if not mock and not API_KEY.startswith("sk-"):
-        sys.exit("请先把 agent.py 里的 API_KEY 换成你的 DeepSeek Key。")
+    if not mock:
+        if "你的DeepSeekKey" in API_KEY or not API_KEY.startswith("sk-"):
+            sys.exit(
+                f"还没有配置 Key（当前读取 {CONFIG_FILE}）。\n"
+                f"  1. 复制 config.example.py 为 config.py\n"
+                f"  2. 在 config.py 里填上 API_KEY\n"
+                f"  或者设置环境变量 DEEPSEEK_API_KEY。\n"
+                f"  想先验证循环可以跑：python agent.py --mock"
+            )
 
     print(f"任务：{task}\n", file=sys.stderr)
     answer = run(task, MockChat() if mock else chat)
