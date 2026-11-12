@@ -6,11 +6,13 @@
 ## 跑起来
 
 ```bash
-# 1. 改 Key：打开 agent.py，搜 API_KEY，把那一行换成你的
-#    （http://platform.deepseek.com 申请；也可以放环境变量 DEEPSEEK_API_KEY）
-
-# 2. 先不花钱验证循环本身
+# 1. 先不花钱验证循环本身（不需要 Key）
 python agent.py --mock
+
+# 2. 配置：复制示例，填上你的 Key
+copy config.example.py config.py        # Windows
+cp config.example.py config.py          # macOS / Linux
+# 然后编辑 config.py 里的 API_KEY（http://platform.deepseek.com 申请）
 
 # 3. 真跑
 python agent.py
@@ -19,6 +21,21 @@ python agent.py "在当前目录建一个 hello.py，内容是打印 hello，然
 
 `--mock` 用一个回放脚本冒充模型，不联网、不耗 token，但**真的执行工具**。
 用来确认消息拼装、工具分发、终止条件这几块没问题，再去怀疑 API。
+
+## 配置
+
+只有 `config.py` 一个文件，`config.example.py` 是它的模板：
+
+| 字段 | 说明 |
+|---|---|
+| `API_KEY` | 必填，DeepSeek 的 Key |
+| `BASE_URL` / `MODEL` | 接口地址和模型，默认 `deepseek-chat` |
+| `MAX_STEPS` | 循环上限，默认 12 |
+| `MAX_OUTPUT` | 单次工具输出截断，默认 4000 字符 |
+| `TEMPERATURE` | 默认 0 |
+
+`config.py` 在 `.gitignore` 里，不会进仓库。环境变量 `DEEPSEEK_API_KEY`
+优先级高于配置文件，适合临时覆盖或 CI。
 
 ## 它只有一个循环
 
