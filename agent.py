@@ -24,19 +24,31 @@ for _stream in (sys.stdout, sys.stderr):
         _stream.reconfigure(encoding="utf-8", errors="replace")
 
 # ---------------------------------------------------------------- 配置
-# 配置放在同目录的 config.py（不入库）；没有就退回 config.example.py 默认值，
-# 这样 --mock 不用先配 Key 也能跑。
+# 配置放在同目录的 config.py（不入库）。示例配置先当默认值，再用 config.py
+# 覆盖——这样用户只写想改的那几行，漏掉的字段自动回退到默认值。
+
+def _load_module(path, name):
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
 
 def _load_config():
     here = Path(__file__).resolve().parent
-    for name in ("config.py", "config.example.py"):
-        path = here / name
-        if path.exists():
-            spec = importlib.util.spec_from_file_location("_agent_config", path)
-            module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(module)
-            return module, name
-    raise SystemExit("找不到 config.py 或 config.example.py，请检查安装是否完整。")
+    example = here / "config.example.py"
+    user = here / "config.py"
+    if not example.exists():
+        raise SystemExit("找不到 config.example.py，安装不完整？")
+
+    cfg = _load_module(example, "_agent_config_default")
+    if user.exists():
+        over = _load_module(user, "_agent_config")
+        for field in dir(over):
+            if field.isupper():
+                setattr(cfg, field, getattr(over, field))
+        return cfg, "config.py"
+    return cfg, "config.example.py"
 
 
 CFG, CONFIG_FILE = _load_config()
@@ -323,5 +335,8 @@ if __name__ == "__main__":
             )
 
     print(f"任务：{task}\n", file=sys.stderr)
-    answer = run(task, MockChat() if mock else chat)
+    try:
+        answer = run(task, MockChat() if mock else chat)
+    except RuntimeError as exc:          # 网络 / 鉴权问题，别甩一屏 traceback
+        sys.exit(f"调用失败：{exc}")
     print("\n" + answer)

@@ -6,18 +6,19 @@
 
 ## 跑起来
 
+Windows 上用启动脚本，首次运行会自动生成 `config.py` 并让你粘贴 Key：
+
 ```bash
-# 1. 先不花钱验证循环本身（不需要 Key）
+run.cmd --mock                            # 先验证循环，不联网、不要 Key
+run.cmd                                   # 真跑
+run.cmd "在当前目录建个 hello.py 然后运行它"
+```
+
+在其他平台或想手动控制，用 Python 直接跑：
+
+```bash
 python agent.py --mock
-
-# 2. 配置：复制示例，填上你的 Key
-copy config.example.py config.py        # Windows
-cp config.example.py config.py          # macOS / Linux
-# 然后编辑 config.py 里的 API_KEY（http://platform.deepseek.com 申请）
-
-# 3. 真跑
-python agent.py
-python agent.py "在当前目录建一个 hello.py，内容是打印 hello，然后运行它"
+python agent.py "任务"
 ```
 
 `--mock` 用一个回放脚本冒充模型，不联网、不耗 token，但**真的执行工具**。
@@ -35,8 +36,9 @@ python agent.py "在当前目录建一个 hello.py，内容是打印 hello，然
 | `MAX_OUTPUT` | 单次工具输出截断，默认 4000 字符 |
 | `TEMPERATURE` | 默认 0 |
 
-`config.py` 在 `.gitignore` 里，不会进仓库。环境变量 `DEEPSEEK_API_KEY`
-优先级高于配置文件，适合临时覆盖或 CI。
+`config.py` 在 `.gitignore` 里，不会进仓库。手写时**只需要写想改的字段**，
+漏掉的会自动回退到 `config.example.py` 里的默认值。环境变量
+`DEEPSEEK_API_KEY` 优先级高于配置文件，适合临时覆盖或 CI。
 
 ## 它只有一个循环
 
