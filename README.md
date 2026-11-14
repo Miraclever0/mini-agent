@@ -59,6 +59,39 @@ for step in range(MAX_STEPS):
 模型每一轮只做一件事：输出「工具名 + JSON 参数」，或者给答案。
 它不知道工具真的会被执行，也不知道执行结果长什么样——**那是循环喂给它的**。
 
+## 调试：trace
+
+每次运行都会在 `traces/` 下写一个 JSONL，一个事件一行：
+
+```json
+{"ts":"2026-11-14T17:01:51.077+08:00","event":"llm","step":1,"duration_ms":812,
+ "usage":{"prompt_tokens":48,"completion_tokens":20},"tool_calls":1}
+{"ts":"2026-11-14T17:01:51.080+08:00","event":"tool","step":1,"name":"list_dir",
+ "args":{"path":"."},"duration_ms":1,"ok":true,"chars":191,"preview":"..."}
+```
+
+```bash
+python tracing.py                  # 看最近一次
+python tracing.py traces/x.jsonl   # 看指定的
+python run.py --no-trace           # 本次不记录
+```
+
+查看器输出：
+
+```
+ 步  类型      耗时  内容                                  上下文
+ ----------------------------------------------------------------
+  1  思考       0ms  决定调用 1 个工具                         48
+  1  执行       1ms  list_dir → 191B                            -
+  2  思考       0ms  结束                                    1252
+
+结束  3 步  2ms
+用量  上下文峰值 1252   累计输入 1452 / 输出 60
+```
+
+「上下文」那列是这一步发给模型的 token 数。它会一路涨，
+这就是以后做上下文管理时要盯的数字。
+
 ## 四个工具
 
 | 工具 | 用途 |
