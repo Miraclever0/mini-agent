@@ -103,6 +103,9 @@ python run.py --no-trace           # 本次不记录
 
 只给四个是有意的：工具越多选择越乱。真要扩，先问「能不能合并进已有的四个」。
 
+实现在 `tools/files.py` 和 `tools/shell.py`，声明（给模型看的 schema）和
+分发在 `tools/__init__.py`。加新工具只需要：写实现 → 加进 `TOOL_IMPL` → 加一条 `TOOLS`。
+
 ## 代码里藏着的几个边界
 
 这些不是「最佳实践」，是这个循环不写就会出事的地方：
