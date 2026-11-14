@@ -1,68 +1,37 @@
-"""最小 agent：一个 while 循环 + 4 个工具。零依赖，只用标准库。跨平台。
+"""最小 agent：一个 while 循环。零依赖，只用标准库。跨平台。
 
-这个文件是「库」：配置加载、工具、循环、调模型。
-入口在 run.py——它负责首次配置引导和命令行参数。
+这个文件只负责两件事：**调模型**和**跑循环**。
 
-直接 import 不会有任何副作用，适合在调试器里单步跟进 run()。
+    配置加载  config_loader.py
+    工具实现  tools/
+    观测记录  tracing.py
+    入口      run.py
+
+import 时没有副作用，适合在调试器里单步跟进 run()。
 """
 
-import importlib.util
 import json
-import os
-import subprocess
 import sys
 import time
 import urllib.error
 import urllib.request
-from pathlib import Path
 
+from config_loader import (
+    API_KEY,
+    BASE_URL,
+    CONFIG_FILE,
+    KEY_PLACEHOLDER,
+    MAX_STEPS,
+    MODEL,
+    TEMPERATURE,
+)
+from tools import TOOLS, clip, execute
 from tracing import Trace
 
 # 输出被管道接走时统一用 UTF-8，避免 Windows 下按 GBK 编码导致乱码
 for _stream in (sys.stdout, sys.stderr):
     if not _stream.isatty():
         _stream.reconfigure(encoding="utf-8", errors="replace")
-
-# 首次配置的占位符，run.py 用它判断 Key 是否还没填
-KEY_PLACEHOLDER = "你的DeepSeekKey"
-
-# ---------------------------------------------------------------- 配置
-# 配置放在同目录的 config.py（不入库）。示例配置先当默认值，再用 config.py
-# 覆盖——这样用户只写想改的那几行，漏掉的字段自动回退到默认值。
-
-def _load_module(path, name):
-    spec = importlib.util.spec_from_file_location(name, path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-def _load_config():
-    here = Path(__file__).resolve().parent
-    example = here / "config.example.py"
-    user = here / "config.py"
-    if not example.exists():
-        raise SystemExit("找不到 config.example.py，安装不完整？")
-
-    cfg = _load_module(example, "_agent_config_default")
-    if user.exists():
-        over = _load_module(user, "_agent_config")
-        for field in dir(over):
-            if field.isupper():
-                setattr(cfg, field, getattr(over, field))
-        return cfg, "config.py"
-    return cfg, "config.example.py"
-
-
-CFG, CONFIG_FILE = _load_config()
-
-API_KEY = os.getenv("DEEPSEEK_API_KEY") or CFG.API_KEY   # 环境变量优先，方便临时覆盖
-BASE_URL = CFG.BASE_URL
-MODEL = CFG.MODEL
-TEMPERATURE = CFG.TEMPERATURE
-MAX_STEPS = CFG.MAX_STEPS
-MAX_OUTPUT = CFG.MAX_OUTPUT
-WORKROOT = Path.cwd().resolve()   # 工具只能碰这个目录以内的东西
 
 SYSTEM_PROMPT = """你是一个能操作本机文件的助手。
 
@@ -71,144 +40,6 @@ SYSTEM_PROMPT = """你是一个能操作本机文件的助手。
 - 修改文件前先读原文件。
 - 任务完成后，直接给出简洁的结论，不要再调用工具。
 """
-
-
-# ---------------------------------------------------------------- 工具实现
-
-class ToolError(Exception):
-    """工具的可预期失败（文件不存在、路径越界……）。
-
-    用异常而不是返回 "错误：..." 字符串，是为了让调用方能区分
-    「工具执行失败」和「工具正常返回了一段内容」，trace 才能如实记录。
-    """
-
-
-def _clip(text, limit=MAX_OUTPUT):
-    text = "" if text is None else str(text)
-    if len(text) <= limit:
-        return text
-    return text[:limit] + f"\n...（已截断，原文共 {len(text)} 字符）"
-
-
-def _resolve(p):
-    """把相对路径解析到 WORKROOT 下，并阻止逃逸。"""
-    path = Path(p)
-    path = (WORKROOT / path).resolve() if not path.is_absolute() else path.resolve()
-    if not path.is_relative_to(WORKROOT):
-        raise PermissionError(f"拒绝访问工作区外的路径: {p}")
-    return path
-
-
-def list_dir(path="."):
-    target = _resolve(path)
-    if not target.is_dir():
-        raise ToolError(f"{path} 不是目录")
-    lines = []
-    for item in sorted(target.iterdir()):
-        kind = "DIR " if item.is_dir() else "FILE"
-        size = "" if item.is_dir() else f" {item.stat().st_size}B"
-        lines.append(f"{kind} {item.name}{size}")
-    return "\n".join(lines) or "（空目录）"
-
-
-def read_file(path, offset=1, limit=200):
-    target = _resolve(path)
-    if not target.is_file():
-        raise ToolError(f"{path} 不是文件")
-    text = target.read_text(encoding="utf-8", errors="replace").splitlines()
-    start = max(1, int(offset))
-    chunk = text[start - 1:start - 1 + int(limit)]
-    body = "\n".join(f"{i:5d}| {line}" for i, line in enumerate(chunk, start))
-    return _clip(f"{target.name}（共 {len(text)} 行，当前 {start}-{start + len(chunk) - 1}）\n{body}")
-
-
-def write_file(path, content):
-    target = _resolve(path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(content, encoding="utf-8")
-    return f"已写入 {target.relative_to(WORKROOT)}（{len(content)} 字符）"
-
-
-def run_shell(cmd):
-    result = subprocess.run(
-        cmd, shell=True, cwd=WORKROOT, capture_output=True,
-        text=True, encoding="utf-8", errors="replace", timeout=60,
-    )
-    out = (result.stdout or "") + (result.stderr or "")
-    return _clip(f"exit={result.returncode}\n{out.strip() or '（无输出）'}")
-
-
-TOOL_IMPL = {
-    "list_dir": list_dir,
-    "read_file": read_file,
-    "write_file": write_file,
-    "run_shell": run_shell,
-}
-
-
-# ---------------------------------------------------------------- 工具声明
-# 这份 JSON 就是前面聊的「线上格式」：名字 + 自然语言描述 + JSON Schema 参数
-
-TOOLS = [
-    {
-        "type": "function",
-        "function": {
-            "name": "list_dir",
-            "description": "列出目录下的文件和子目录。需要先了解项目结构时调用。",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string", "description": "相对路径，默认当前目录 '.'"}
-                },
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "read_file",
-            "description": "读取文本文件，返回带行号的内容。修改文件前必须先调用它。",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string", "description": "文件路径"},
-                    "offset": {"type": "integer", "description": "起始行，默认 1"},
-                    "limit": {"type": "integer", "description": "最多读多少行，默认 200"},
-                },
-                "required": ["path"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "write_file",
-            "description": "把完整内容写入文件（覆盖），父目录不存在会自动创建。",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string", "description": "文件路径"},
-                    "content": {"type": "string", "description": "要写入的完整文本"},
-                },
-                "required": ["path", "content"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "run_shell",
-            "description": "在工作目录执行一条 shell 命令并返回输出。用于跑测试、查环境。",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "cmd": {"type": "string", "description": "要执行的命令，单条"}
-                },
-                "required": ["cmd"],
-            },
-        },
-    },
-]
 
 
 # ---------------------------------------------------------------- 调模型
@@ -245,22 +76,7 @@ def chat(messages, tools=TOOLS, retries=3):
             raise RuntimeError(f"网络错误: {e.reason}") from e
 
 
-# ---------------------------------------------------------------- 执行 + 主循环
-
-def execute(name, args):
-    """执行一个工具调用，返回 (ok, 文本)。失败不抛异常，把错误交回给模型。"""
-    fn = TOOL_IMPL.get(name)
-    if fn is None:
-        return False, f"错误：不存在的工具 {name}。可用：{', '.join(TOOL_IMPL)}"
-    try:
-        return True, str(fn(**args))
-    except ToolError as e:
-        return False, f"错误：{e}"
-    except TypeError as e:
-        return False, f"错误：参数不对（{e}）。请对照工具定义检查参数名和类型。"
-    except Exception as e:  # 工具失败不崩，把错误回传给模型让它自己改
-        return False, f"错误：{type(e).__name__}: {e}"
-
+# ---------------------------------------------------------------- 主循环
 
 def run(task, chat_fn=chat, trace=None):
     """跑一轮任务。trace 可以是 tracing.Trace，也可以是 None（不记录）。"""
@@ -310,7 +126,7 @@ def run(task, chat_fn=chat, trace=None):
             if trace:
                 trace.emit("tool", step=step, name=name, args=args,
                            duration_ms=round((time.perf_counter() - t1) * 1000),
-                           ok=ok, chars=len(result), preview=_clip(result, 200))
+                           ok=ok, chars=len(result), preview=clip(result, 200))
             messages.append({
                 "role": "tool",
                 "tool_call_id": call["id"],
