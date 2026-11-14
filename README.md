@@ -7,19 +7,21 @@
 
 ## 跑起来
 
-Windows 上用启动脚本，首次运行会自动生成 `config.py` 并让你粘贴 Key：
-
 ```bash
-run.cmd --mock                            # 先验证循环，不联网、不要 Key
-run.cmd                                   # 真跑
-run.cmd "在当前目录建个 hello.py 然后运行它"
+python run.py --mock                      # 先验证循环，不联网、不要 Key
+python run.py                             # 首次运行会提示你粘贴 Key
+python run.py "在当前目录建个 hello.py 然后运行它"
 ```
 
-在其他平台或想手动控制，用 Python 直接跑：
+`run.py` 是唯一的入口：它负责首次配置（生成 `config.py`、交互式询问 Key），
+然后把参数交给 `agent.py`。没有 shell 脚本，也没有平台限制，
+Windows / macOS / Linux 行为一致。
 
-```bash
-python agent.py --mock
-python agent.py "任务"
+`agent.py` 本身是库，可以被 import 单独调试：
+
+```python
+import agent
+agent.run("列一下当前目录", agent.MockChat())   # 不走网络
 ```
 
 `--mock` 用一个回放脚本冒充模型，不联网、不耗 token，但**真的执行工具**。
@@ -95,7 +97,6 @@ for step in range(MAX_STEPS):
   要等运行时才报错，而不是提前拒绝
 - **绑定 DeepSeek**——`chat()` 直接按 `/chat/completions` 的格式发请求，
   换 provider 要改这一个函数
-- **启动脚本只有 Windows 版**——`run.cmd` 依赖 PowerShell
 
 这些都能加，但每加一样，「最小实现」就少一分最小。
 

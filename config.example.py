@@ -1,10 +1,10 @@
-"""配置示例 —— 复制成 config.py 后填上真实值。
+"""配置模板。首次运行 `python run.py` 时会自动复制成 config.py。
 
-    copy config.example.py config.py     # Windows
-    cp config.example.py config.py       # macOS / Linux
-
+不需要手动复制：程序检测到没有 config.py 会自己生成，并在缺少 Key 时提示你粘贴。
 config.py 已在 .gitignore 里，不会被提交。
-不建 config.py 也能跑：设置环境变量 DEEPSEEK_API_KEY 即可覆盖 Key。
+
+也可以完全不建 config.py，用环境变量 DEEPSEEK_API_KEY 覆盖 Key，
+其余字段直接用本文件的默认值。
 """
 
 # ---------------------------------------------------------------- 必填
