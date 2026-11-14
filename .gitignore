@@ -7,6 +7,7 @@ venv/
 # 工具生成物 / 本地试验
 tmp/
 out/
+traces/
 
 # 密钥：不要把 Key 提交上去
 config.py

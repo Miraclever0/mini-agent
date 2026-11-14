@@ -16,6 +16,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+from tracing import Trace
+
 # 输出被管道接走时统一用 UTF-8，避免 Windows 下按 GBK 编码导致乱码
 for _stream in (sys.stdout, sys.stderr):
     if not _stream.isatty():
@@ -73,6 +75,14 @@ SYSTEM_PROMPT = """你是一个能操作本机文件的助手。
 
 # ---------------------------------------------------------------- 工具实现
 
+class ToolError(Exception):
+    """工具的可预期失败（文件不存在、路径越界……）。
+
+    用异常而不是返回 "错误：..." 字符串，是为了让调用方能区分
+    「工具执行失败」和「工具正常返回了一段内容」，trace 才能如实记录。
+    """
+
+
 def _clip(text, limit=MAX_OUTPUT):
     text = "" if text is None else str(text)
     if len(text) <= limit:
@@ -92,7 +102,7 @@ def _resolve(p):
 def list_dir(path="."):
     target = _resolve(path)
     if not target.is_dir():
-        return f"错误：{path} 不是目录"
+        raise ToolError(f"{path} 不是目录")
     lines = []
     for item in sorted(target.iterdir()):
         kind = "DIR " if item.is_dir() else "FILE"
@@ -104,7 +114,7 @@ def list_dir(path="."):
 def read_file(path, offset=1, limit=200):
     target = _resolve(path)
     if not target.is_file():
-        return f"错误：{path} 不是文件"
+        raise ToolError(f"{path} 不是文件")
     text = target.read_text(encoding="utf-8", errors="replace").splitlines()
     start = max(1, int(offset))
     chunk = text[start - 1:start - 1 + int(limit)]
@@ -204,6 +214,7 @@ TOOLS = [
 # ---------------------------------------------------------------- 调模型
 
 def chat(messages, tools=TOOLS, retries=3):
+    """调一次模型，返回 (message, usage)。usage 可能是 None（某些代理不透传）。"""
     payload = {
         "model": MODEL,
         "messages": messages,
@@ -220,7 +231,7 @@ def chat(messages, tools=TOOLS, retries=3):
         try:
             with urllib.request.urlopen(req, timeout=180) as resp:
                 body = json.loads(resp.read().decode("utf-8"))
-            return body["choices"][0]["message"]
+            return body["choices"][0]["message"], body.get("usage")
         except urllib.error.HTTPError as e:
             detail = e.read().decode("utf-8", "replace")[:500]
             if e.code in (429, 500, 502, 503) and attempt < retries:
@@ -237,51 +248,80 @@ def chat(messages, tools=TOOLS, retries=3):
 # ---------------------------------------------------------------- 执行 + 主循环
 
 def execute(name, args):
+    """执行一个工具调用，返回 (ok, 文本)。失败不抛异常，把错误交回给模型。"""
     fn = TOOL_IMPL.get(name)
     if fn is None:
-        return f"错误：不存在的工具 {name}。可用：{', '.join(TOOL_IMPL)}"
+        return False, f"错误：不存在的工具 {name}。可用：{', '.join(TOOL_IMPL)}"
     try:
-        return fn(**args)
+        return True, str(fn(**args))
+    except ToolError as e:
+        return False, f"错误：{e}"
     except TypeError as e:
-        return f"错误：参数不对（{e}）。请对照工具定义检查参数名和类型。"
+        return False, f"错误：参数不对（{e}）。请对照工具定义检查参数名和类型。"
     except Exception as e:  # 工具失败不崩，把错误回传给模型让它自己改
-        return f"错误：{type(e).__name__}: {e}"
+        return False, f"错误：{type(e).__name__}: {e}"
 
 
-def run(task, chat_fn=chat):
+def run(task, chat_fn=chat, trace=None):
+    """跑一轮任务。trace 可以是 tracing.Trace，也可以是 None（不记录）。"""
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": task},
     ]
+    started = time.perf_counter()
+    totals = {"prompt_tokens": 0, "completion_tokens": 0}
+    peak_context = 0
 
     for step in range(1, MAX_STEPS + 1):
-        msg = chat_fn(messages, TOOLS)
+        t0 = time.perf_counter()
+        msg, usage = chat_fn(messages, TOOLS)
+        took = round((time.perf_counter() - t0) * 1000)
+
+        if usage:                          # 累计账单用量，同时记录上下文峰值
+            for key in totals:
+                totals[key] += usage.get(key) or 0
+            peak_context = max(peak_context, usage.get("prompt_tokens") or 0)
+
         msg.setdefault("content", msg.get("content") or "")
         messages.append(msg)
 
         calls = msg.get("tool_calls") or []
+        if trace:
+            trace.emit("llm", step=step, duration_ms=took, usage=usage, tool_calls=len(calls))
+
         if not calls:                      # 不调工具 = 它认为任务结束
-            return msg.get("content") or "（模型没有给出内容）"
+            answer = msg.get("content") or "（模型没有给出内容）"
+            if trace:
+                trace.emit("run_end", steps=step, duration_ms=round((time.perf_counter() - started) * 1000),
+                           usage=totals, peak_context=peak_context, answer=answer)
+            return answer
 
         for call in calls:                 # 模型只是提了个建议，执行权在这里
             name = call["function"]["name"]
             raw = call["function"].get("arguments") or "{}"
+            t1 = time.perf_counter()
             try:
                 args = json.loads(raw)
             except json.JSONDecodeError:
-                result = f"错误：arguments 不是合法 JSON：{raw[:200]}"
+                ok, result = False, f"错误：arguments 不是合法 JSON：{raw[:200]}"
             else:
-                result = execute(name, args)
+                ok, result = execute(name, args)
 
-            print(f"[{step}] {name} {raw}", file=sys.stderr)
-            print(f"     -> {_clip(result, 160)}", file=sys.stderr)
+            if trace:
+                trace.emit("tool", step=step, name=name, args=args,
+                           duration_ms=round((time.perf_counter() - t1) * 1000),
+                           ok=ok, chars=len(result), preview=_clip(result, 200))
             messages.append({
                 "role": "tool",
                 "tool_call_id": call["id"],
                 "content": result,
             })
 
-    return f"达到步数上限 {MAX_STEPS}，任务未收敛。"
+    answer = f"达到步数上限 {MAX_STEPS}，任务未收敛。"
+    if trace:
+        trace.emit("run_end", steps=MAX_STEPS, duration_ms=round((time.perf_counter() - started) * 1000),
+                   usage=totals, peak_context=peak_context, answer=answer)
+    return answer
 
 
 # ---------------------------------------------------------------- mock 模型
@@ -294,7 +334,11 @@ MOCK_SCRIPT = [
 
 
 class MockChat:
-    """假模型：按脚本回放工具调用，用来验证循环本身是否正常。"""
+    """假模型：按脚本回放工具调用，用来验证循环本身是否正常。
+
+    顺带伪造 token 用量（按上下文字符数估算），这样 trace 查看器里
+    也有东西可看，方便验证记录链路。
+    """
 
     def __init__(self):
         self.i = 0
@@ -302,8 +346,12 @@ class MockChat:
     def __call__(self, messages, tools):
         name, args = MOCK_SCRIPT[min(self.i, len(MOCK_SCRIPT) - 1)]
         self.i += 1
+        usage = {
+            "prompt_tokens": sum(len(json.dumps(m, ensure_ascii=False)) for m in messages) // 4,
+            "completion_tokens": 20,
+        }
         if name is None:
-            return {"role": "assistant", "content": "（mock）已看完目录和 README，循环正常。"}
+            return {"role": "assistant", "content": "（mock）已看完目录和 README，循环正常。"}, usage
         return {
             "role": "assistant",
             "content": "",
@@ -312,7 +360,7 @@ class MockChat:
                 "type": "function",
                 "function": {"name": name, "arguments": json.dumps(args, ensure_ascii=False)},
             }],
-        }
+        }, usage
 
 
 # ---------------------------------------------------------------- 入口
@@ -324,7 +372,9 @@ def main(argv=None):
     """命令行入口。返回进程退出码，由 run.py 负责抛出。"""
     argv = list(sys.argv[1:] if argv is None else argv)
     mock = "--mock" in argv
-    task = " ".join(a for a in argv if a != "--mock") or DEFAULT_TASK
+    no_trace = "--no-trace" in argv
+    flags = ("--mock", "--no-trace")
+    task = " ".join(a for a in argv if a not in flags) or DEFAULT_TASK
 
     if not mock:
         if KEY_PLACEHOLDER in API_KEY or not API_KEY.startswith("sk-"):
@@ -338,13 +388,24 @@ def main(argv=None):
             )
             return 1
 
-    print(f"任务：{task}\n", file=sys.stderr)
+    trace = None
+    if not no_trace:
+        trace = Trace()
+        trace.emit("run_start", task=task, model="mock" if mock else MODEL, max_steps=MAX_STEPS)
+
     try:
-        answer = run(task, MockChat() if mock else chat)
+        answer = run(task, MockChat() if mock else chat, trace=trace)
     except RuntimeError as exc:          # 网络 / 鉴权问题，别甩一屏 traceback
         print(f"调用失败：{exc}", file=sys.stderr)
         return 1
+    finally:
+        if trace:
+            trace.close()
+
     print("\n" + answer)
+    if trace:
+        print(f"\ntrace: {trace.path}", file=sys.stderr)
+        print("查看: python tracing.py", file=sys.stderr)
     return 0
 
 
