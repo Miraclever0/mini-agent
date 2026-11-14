@@ -1,11 +1,9 @@
-"""最小 agent：一个 while 循环 + 4 个工具。零依赖，只用标准库。
+"""最小 agent：一个 while 循环 + 4 个工具。零依赖，只用标准库。跨平台。
 
-用法:
-    python agent.py                     # 跑默认任务
-    python agent.py "把 tests 里失败的用例找出来"   # 跑指定任务
-    python agent.py --mock              # 不联网，用假模型走一遍完整循环
+这个文件是「库」：配置加载、工具、循环、调模型。
+入口在 run.py——它负责首次配置引导和命令行参数。
 
-第一次用：把 config.example.py 复制成 config.py，填上你的 DeepSeek Key。
+直接 import 不会有任何副作用，适合在调试器里单步跟进 run()。
 """
 
 import importlib.util
@@ -22,6 +20,9 @@ from pathlib import Path
 for _stream in (sys.stdout, sys.stderr):
     if not _stream.isatty():
         _stream.reconfigure(encoding="utf-8", errors="replace")
+
+# 首次配置的占位符，run.py 用它判断 Key 是否还没填
+KEY_PLACEHOLDER = "你的DeepSeekKey"
 
 # ---------------------------------------------------------------- 配置
 # 配置放在同目录的 config.py（不入库）。示例配置先当默认值，再用 config.py
@@ -318,25 +319,35 @@ class MockChat:
 
 DEFAULT_TASK = "看一下当前目录里有什么，读一下 README.md，用三句话总结这个项目。"
 
-if __name__ == "__main__":
-    argv = [a for a in sys.argv[1:]]
+
+def main(argv=None):
+    """命令行入口。返回进程退出码，由 run.py 负责抛出。"""
+    argv = list(sys.argv[1:] if argv is None else argv)
     mock = "--mock" in argv
-    argv = [a for a in argv if a != "--mock"]
-    task = " ".join(argv) or DEFAULT_TASK
+    task = " ".join(a for a in argv if a != "--mock") or DEFAULT_TASK
 
     if not mock:
-        if "你的DeepSeekKey" in API_KEY or not API_KEY.startswith("sk-"):
-            sys.exit(
-                f"还没有配置 Key（当前读取 {CONFIG_FILE}）。\n"
-                f"  1. 复制 config.example.py 为 config.py\n"
-                f"  2. 在 config.py 里填上 API_KEY\n"
-                f"  或者设置环境变量 DEEPSEEK_API_KEY。\n"
-                f"  想先验证循环可以跑：python agent.py --mock"
+        if KEY_PLACEHOLDER in API_KEY or not API_KEY.startswith("sk-"):
+            print(
+                f"还没有可用的 Key（当前配置：{CONFIG_FILE}）。\n"
+                f"  交互式运行会自动提示你粘贴；非交互环境请设置环境变量：\n"
+                f"    setx DEEPSEEK_API_KEY \"sk-...\"     (Windows)\n"
+                f"    export DEEPSEEK_API_KEY=sk-...     (bash)\n"
+                f"  想先验证循环能跑：python run.py --mock",
+                file=sys.stderr,
             )
+            return 1
 
     print(f"任务：{task}\n", file=sys.stderr)
     try:
         answer = run(task, MockChat() if mock else chat)
     except RuntimeError as exc:          # 网络 / 鉴权问题，别甩一屏 traceback
-        sys.exit(f"调用失败：{exc}")
+        print(f"调用失败：{exc}", file=sys.stderr)
+        return 1
     print("\n" + answer)
+    return 0
+
+
+if __name__ == "__main__":
+    # 这是库文件，不是入口。直接跑它只会得到一句提示，而不是静默什么都不做。
+    sys.exit('这是库文件。入口是 run.py：python run.py "你的任务"')
