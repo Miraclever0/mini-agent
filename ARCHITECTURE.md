@@ -101,6 +101,8 @@ graph TD
 | `tools/shell.py` | 执行命令 | 16 |
 | `tracing.py` | `Trace` 类、查看器 CLI | 169 |
 | `config.example.py` | 配置默认值 | 23 |
+| `evals/cases.py` | 用例定义（任务 + 断言） | 119 |
+| `evals/run.py` | 跑用例、报通过率 | 145 |
 
 `tools/` 是唯一预期会持续变大的部分；其余模块按职责稳定。
 
