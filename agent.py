@@ -78,12 +78,23 @@ def chat(messages, tools=TOOLS, retries=3):
 
 # ---------------------------------------------------------------- 主循环
 
-def run(task, chat_fn=chat, trace=None):
-    """跑一轮任务。trace 可以是 tracing.Trace，也可以是 None（不记录）。"""
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": task},
-    ]
+def new_messages():
+    """一段新对话的起始消息（只有系统提示）。"""
+    return [{"role": "system", "content": SYSTEM_PROMPT}]
+
+
+def run(task, chat_fn=chat, trace=None, messages=None):
+    """跑一轮任务，返回最终答复。
+
+    messages 传入则**就地续写**（多轮对话），不传则新建一段。
+    本轮产生的 user / assistant / tool 消息都会追加进去，
+    调用方持有同一个列表就能拿到完整历史。
+    trace 可以是 tracing.Trace，也可以是 None（不记录）。
+    """
+    if messages is None:
+        messages = new_messages()
+    messages.append({"role": "user", "content": task})
+
     started = time.perf_counter()
     totals = {"prompt_tokens": 0, "completion_tokens": 0}
     peak_context = 0
@@ -179,18 +190,22 @@ class MockChat:
         }, usage
 
 
-# ---------------------------------------------------------------- 入口
-
-DEFAULT_TASK = "看一下当前目录里有什么，读一下 README.md，用三句话总结这个项目。"
-
+# ---------------------------------------------------------------- 单次执行
 
 def main(argv=None):
-    """命令行入口。返回进程退出码，由 run.py 负责抛出。"""
+    """单次执行一条任务。返回进程退出码，由 run.py 负责抛出。
+
+    交互模式不在这里——那是 run.py 的事。这里只管「跑一条任务然后退出」。
+    """
     argv = list(sys.argv[1:] if argv is None else argv)
     mock = "--mock" in argv
     no_trace = "--no-trace" in argv
     flags = ("--mock", "--no-trace")
-    task = " ".join(a for a in argv if a not in flags) or DEFAULT_TASK
+    task = " ".join(a for a in argv if a not in flags)
+
+    if not task:
+        print('没有任务。用法：python run.py "你的任务"', file=sys.stderr)
+        return 2
 
     if not mock:
         if KEY_PLACEHOLDER in API_KEY or not API_KEY.startswith("sk-"):

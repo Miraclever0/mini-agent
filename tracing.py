@@ -30,15 +30,23 @@ class Trace:
         self.dir = Path(directory) if directory else Path.cwd() / "traces"
         self.dir.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
+        # 同一秒内两次运行（REPL 连续两轮）不能互相覆盖
         self.path = self.dir / f"{stamp}.jsonl"
+        serial = 1
+        while self.path.exists():
+            serial += 1
+            self.path = self.dir / f"{stamp}-{serial}.jsonl"
         self._file = self.path.open("w", encoding="utf-8")
         self.console = console
+        self.summary = None         # run_end 那条记录，供调用方读用量
 
     def emit(self, event, **fields):
         record = {"ts": datetime.now().astimezone().isoformat(timespec="milliseconds"), "event": event}
         record.update(fields)
         self._file.write(json.dumps(record, ensure_ascii=False) + "\n")
         self._file.flush()          # 崩了也要留下已经发生的部分
+        if event == "run_end":
+            self.summary = record
         if self.console:
             _echo(record)
 
