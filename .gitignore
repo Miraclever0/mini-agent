@@ -8,6 +8,7 @@ venv/
 tmp/
 out/
 traces/
+.evals-tmp/
 
 # 密钥：不要把 Key 提交上去
 config.py
