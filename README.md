@@ -1,5 +1,7 @@
 # mini-agent
 
+[![ci](https://github.com/Miraclever0/mini-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/Miraclever0/mini-agent/actions/workflows/ci.yml)
+
 一个单文件的 agent，零依赖（只用 Python 标准库），直连 DeepSeek 的
 `/chat/completions` 接口。没有框架、没有多 agent、没有 RAG。
 
