@@ -1,0 +1,34 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      # 纯语法检查：任何模块 import 断裂、文件漏提交都会在这里暴露
+      - name: 语法检查
+        run: python -m compileall -q agent.py run.py config_loader.py tracing.py tools evals
+
+      # 离线评测：用假模型跑通循环、工具分发、trace 落盘
+      # 不需要任何密钥，也不消耗 token
+      - name: 离线评测
+        run: python evals/run.py
